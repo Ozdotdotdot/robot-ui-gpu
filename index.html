@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Putting a robot's touchscreen UI on the GPU · Ozair Khan</title>
+<meta name="description" content="How I found why a robot's Electron UI ran at under 20 fps, proved a GPU-native rewrite at 60 fps, and shipped the smaller fix.">
+<style>
+  :root{
+    --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6a65; --line:#e6e3dc; --card:#ffffff;
+    --accent:#d9480f; --accent-soft:#fff1e8; --good:#2b8a3e; --bad:#c92a2a; --code:#f3f1ec;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#141413; --fg:#ecebe6; --muted:#9c9a92; --line:#2c2b28; --card:#1c1c1a;
+      --accent:#ff8a4c; --accent-soft:#2a1a10; --good:#69db7c; --bad:#ff8787; --code:#22211f; }
+  }
+  *{box-sizing:border-box}
+  html{background:var(--bg);color:var(--fg)}
+  body{margin:0;font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  main{max-width:760px;margin:0 auto;padding:56px 24px 80px}
+  a{color:var(--accent);text-underline-offset:3px}
+  .eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  h1{font-size:38px;line-height:1.15;letter-spacing:-.02em;margin:0 0 14px}
+  .lede{font-size:19px;color:var(--muted);margin:0 0 8px}
+  .byline{font-size:14px;color:var(--muted);margin:18px 0 0}
+  h2{font-size:23px;letter-spacing:-.01em;margin:56px 0 12px;padding-top:8px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:8px}
+  h3{font-size:17px;margin:28px 0 6px}
+  p{margin:0 0 14px}
+  code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:1px 6px;border-radius:5px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:36px 0 0}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .stat .v{font-size:28px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:15px;font-weight:600;color:var(--muted)}
+  .stat .l{font-size:13.5px;color:var(--muted);line-height:1.4;margin-top:4px}
+  .video{margin:40px 0 0;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:var(--card)}
+  .video video{display:block;width:100%;height:auto;background:#000}
+  .video .ph{padding:48px 24px;text-align:center;color:var(--muted)}
+  .video .cap{padding:12px 16px;font-size:14px;color:var(--muted);border-top:1px solid var(--line)}
+  table{width:100%;border-collapse:collapse;margin:14px 0 18px;font-size:15px}
+  th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th{font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600}
+  .good{color:var(--good)} .bad{color:var(--bad)}
+  .callout{background:var(--accent-soft);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;padding:14px 18px;margin:20px 0}
+  .callout p:last-child{margin:0}
+  ol.steps,ul.list{padding-left:22px;margin:0 0 14px} ol.steps li,ul.list li{margin:0 0 8px}
+  .bars{margin:18px 0 6px}
+  .bar{display:grid;grid-template-columns:190px 1fr 74px;align-items:center;gap:12px;margin:9px 0;font-size:14.5px}
+  .bar .track{height:12px;background:var(--code);border-radius:6px;overflow:hidden}
+  .bar .fill{height:100%;border-radius:6px}
+  .bar .val{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+  .note{font-size:13.5px;color:var(--muted)}
+  footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:15px;color:var(--muted)}
+  @media (max-width:620px){
+    h1{font-size:30px} .stats{grid-template-columns:1fr} .bar{grid-template-columns:1fr 64px} .bar .label{grid-column:1/-1;margin-bottom:-4px}
+    table{font-size:14px} th,td{padding:8px 6px}
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Case study · October 2026</p>
+  <h1>Putting a robot's touchscreen UI on the GPU</h1>
+  <p class="lede">The cleaning robot I support at work had a laggy touchscreen. I got shell access, found out why, proved a full rewrite could hit 60 fps, and then chose the fix the team could actually ship.</p>
+  <p class="byline">Ozair Khan · <a href="mailto:ozairk11@gmail.com">ozairk11@gmail.com</a> · <a href="https://github.com/ozdotdotdot">github.com/ozdotdotdot</a></p>
+
+  <div class="stats">
+    <div class="stat"><div class="v">17.7 → 42–45 <small>fps</small></div><div class="l">Electron on the GPU vs. software rendering (test page), about 2.4x</div></div>
+    <div class="stat"><div class="v">51–60 <small>fps</small></div><div class="l">Rust/Slint prototype on the same GPU, capped by the 60 Hz panel</div></div>
+    <div class="stat"><div class="v">80 <small>min</small></div><div class="l">soak with flat memory and zero GPU, kernel or JS errors</div></div>
+  </div>
+
+  <figure class="video">
+    <video id="demo" controls playsinline preload="metadata" poster="" src="demo.mp4"></video>
+    <div class="ph" id="ph" hidden>Demo video coming soon: the same taps on the stock UI, then on the GPU-rendered UI.</div>
+    <figcaption class="cap">Same robot, same gestures: the stock software-rendered UI, then the GPU-rendered one.</figcaption>
+  </figure>
+
+  <h2><span class="n">01</span>The problem</h2>
+  <p>The robot's touchscreen runs an Electron + React app on an NXP i.MX8 board (aarch64, Vivante GC7000 GPU, Weston compositor), inside a Docker container. It felt sluggish: taps lagged and animations stuttered. The people using that screen are hotel housekeeping staff, every day, so it is a large part of how customers experience the product.</p>
+  <p>I'm on the customer success team, not engineering. I asked if I could take a look, and got SSH access to a dev robot.</p>
+
+  <h2><span class="n">02</span>Measure before touching anything</h2>
+  <p>The board has no FPS counter for Electron, so I wrote one. Every GPU job raises an interrupt, so a small read-only script samples <code>/proc/interrupts</code> for the GPU driver's lines every 2 ms and turns the timestamps into a frame-cadence estimate. Combined with per-thread CPU from <code>top -H</code>, that gave a baseline:</p>
+  <ul class="list">
+    <li>Frame spacing was 16–17 ms when it was smooth, but the 95th-percentile gap was <strong>100–240 ms</strong>. Those were the stalls you could feel.</li>
+    <li>The UI threads used about <strong>83% of a CPU core</strong> just to tap a menu open and closed.</li>
+    <li>Only the compositor and Xwayland held GPU contexts. <strong>Electron wasn't touching the GPU at all</strong>; it was rendering in software.</li>
+  </ul>
+
+  <h2><span class="n">03</span>The ambitious path: prove what the hardware can do</h2>
+  <p>Before fixing the old stack, I wanted to know the ceiling. I rebuilt the main screens in <strong>Rust with Slint</strong>, a GPU-native UI toolkit, matching the existing design pixel for pixel (0.4–3% pixel difference on most screens against the component library).</p>
+  <ul class="list">
+    <li>The robot has no compiler and no package manager, so I cross-compiled for aarch64 with <code>cargo-zigbuild</code> against the right glibc version, loading every GPU and Wayland library at runtime so no sysroot was needed.</li>
+    <li>I wired it to live robot state through a read-only bridge into the robot's ROS 2 graph, then added a run-control channel with safety gates: <em>stop</em> always goes through and is retried once, <em>start</em> is refused while a run is active or the robot is picked up, and everything has a dry-run mode.</li>
+    <li>It ran on the robot as a native Wayland client and started, paused and stopped real cleaning runs.</li>
+  </ul>
+  <div class="bars" role="img" aria-label="Frame rate comparison">
+    <div class="bar"><span class="label">Stock Electron (software)</span><div class="track"><div class="fill" style="width:33%;background:var(--bad)"></div></div><span class="val">10–30</span></div>
+    <div class="bar"><span class="label">Slint, software renderer</span><div class="track"><div class="fill" style="width:50%;background:var(--muted)"></div></div><span class="val">~30</span></div>
+    <div class="bar"><span class="label">Slint, GPU renderer</span><div class="track"><div class="fill" style="width:100%;background:var(--good)"></div></div><span class="val">51–60</span></div>
+  </div>
+  <p class="note">Frames per second, estimated from GPU interrupt timing. The loads differ (manual taps vs. a scripted loop), so treat this as indicative, not a controlled A/B.</p>
+  <p>It was butter smooth. It also would have meant rewriting a whole production UI, which no team takes on lightly.</p>
+
+  <h2><span class="n">04</span>The pragmatic path: fix the app they already have</h2>
+  <p>The obvious move, turning hardware acceleration back on, doesn't help by itself. I found three independent blockers, and each one alone keeps the GPU off:</p>
+  <ol class="steps">
+    <li><strong>The app turns the GPU off itself.</strong> Its entry point disables GPU acceleration unconditionally, so no launch flag can override it.</li>
+    <li><strong>Wrong display path.</strong> The UI ran as an X11 app through Xwayland, and the Vivante driver only accelerates Wayland (and GBM), not X11.</li>
+    <li><strong>The container can't reach the GPU.</strong> The UI's user isn't in the <code>video</code> group that owns the GPU device, and the container only ships generic Mesa libraries, not the vendor driver.</li>
+  </ol>
+  <table>
+    <thead><tr><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Neutralize the two GPU kill-switch calls</td><td>Nothing else matters until they're gone</td></tr>
+      <tr><td>Mount the Wayland socket, run with <code>--ozone-platform=wayland</code></td><td>The driver only speaks Wayland</td></tr>
+      <tr><td>Map <code>/dev/galcore</code>, add the <code>video</code> group, load the vendor EGL/GLES libraries first</td><td>The container's Mesa can't drive this GPU</td></tr>
+      <tr><td><code>--use-gl=egl --in-process-gpu --ignore-gpu-blocklist --enable-gpu-rasterization</code></td><td>A separate GPU process has no Wayland display, so the GPU work has to run in-process</td></tr>
+      <tr><td>Turn off MSAA and stencil buffers for rasterization</td><td>Without it, SVG icons silently vanish on this driver</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><p><strong>Traps worth knowing:</strong> mapping <code>/dev/dri</code> makes Chromium pick GBM buffers and crash; the missing icons only showed up on certain screens; and the app crashes at launch without a writable config directory.</p></div>
+  <p>I tested everything in a separate, throwaway, network-isolated container, and production containers were never modified. The result runs the <strong>unmodified UI code</strong> on the GPU, side by side with the normal UI on the live robot.</p>
+
+  <h2><span class="n">05</span>Results</h2>
+  <table>
+    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Frame rate (GPU test page)</td><td class="num"><span class="bad">17.7</span> → <span class="good">42–45 fps</span></td></tr>
+      <tr><td>Real UI on the live robot</td><td>Start, pause, stop and the run summary all worked with no errors; noticeably smoother</td></tr>
+      <tr><td>80-minute idle soak</td><td>Memory flat throughout; no JS, GPU or kernel errors; no crashes; temperature peaked at 84 °C and settled to 72 °C</td></tr>
+      <tr><td>CPU and memory at idle</td><td>~6–7% CPU and ~340 MB vs. ~8.5% and 430–510 MB stock (a rough read, not a controlled test)</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="n">06</span>What I'd still verify before rolling it out</h2>
+  <ul class="list">
+    <li><strong>GPU failure.</strong> With the GPU in-process, a GPU crash takes down the whole UI instead of falling back. It needs a supervised restart and a deliberate crash test.</li>
+    <li><strong>Full-shift endurance during real cleaning runs,</strong> while the GPU is shared with the compositor and the cameras.</li>
+    <li><strong>A controlled A/B on a real run</strong> using the same interrupt sampler, plus every screen I haven't exercised yet (map, OTA update, diagnostics).</li>
+  </ul>
+
+  <h2><span class="n">07</span>What I took from it</h2>
+  <p>The rewrite was the more fun build, and it proved the hardware could hit 60 fps. But the job was to make the robot better for the people using it, and a handful of mounts and flags gets most of that win at a fraction of the risk. Building the ambitious version first is what made me confident the small fix was the right one.</p>
+
+  <footer>
+    <p>The robot code is proprietary, so it isn't published here. I'm happy to walk through it live. For code you can read today, see <a href="https://smash.watch">smash.watch</a> (<a href="https://github.com/Ozdotdotdot/smash-frontend">frontend</a>, <a href="https://github.com/Ozdotdotdot/smashDA">data pipeline</a>) and <a href="https://minesweeper.ozairkhan.com">Minesweeper XP</a>, reverse-engineered from <code>WINMINE.EXE</code> (<a href="https://github.com/Ozdotdotdot/minesweeper-xp">source</a>).</p>
+  </footer>
+</main>
+<script>
+  const v=document.getElementById('demo'), ph=document.getElementById('ph');
+  v.addEventListener('error',()=>{v.hidden=true;ph.hidden=false},true);
+</script>
+</body>
+</html>
